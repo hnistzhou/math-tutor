@@ -1,0 +1,16 @@
+# Math Solution Skill - Python 依赖
+
+# Manim 数学动画渲染
+manim>=0.18.0
+
+# 图像处理（帧提取辅助）
+Pillow>=10.0.0
+
+# HTTP 请求（CosyVoice API 调用）
+# 使用标准库 urllib，无需额外安装
+
+# Tier-2 TTS 降级：微软 Azure Neural TTS 免费端点（无需 API Key）
+edge-tts>=6.1.9
+
+# 可选：如果使用 CosyVoice Python SDK（非 HTTP API 模式）
+# cosyvoice  # 需要从官方仓库安装，见 README
