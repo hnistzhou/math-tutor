@@ -60,9 +60,11 @@ def extract_frame(
     video_path: str,
     output_path: str,
     timestamp_spec: str = "middle",
+    use_cache: bool = True,
 ) -> dict:
     """
     从视频中提取关键帧。
+    use_cache=True 时：若 output_path 已存在且比 video_path 更新，直接返回缓存结果，跳过 FFmpeg。
     返回: {"success": bool, "output_file": str|None, "timestamp_sec": float, "error": str|None}
     """
     if not os.path.exists(video_path):
@@ -72,6 +74,21 @@ def extract_frame(
             "timestamp_sec": -1,
             "error": f"视频文件不存在: {video_path}",
         }
+
+    # 缓存检查：若已提取过且视频未更新，直接返回缓存
+    if use_cache and os.path.exists(output_path):
+        cache_mtime = os.path.getmtime(output_path)
+        video_mtime = os.path.getmtime(video_path)
+        cache_size = os.path.getsize(output_path)
+        if cache_mtime >= video_mtime and cache_size >= 100:
+            return {
+                "success": True,
+                "output_file": output_path,
+                "timestamp_sec": -1,  # 缓存命中，无需重新计算时间戳
+                "file_size_bytes": cache_size,
+                "error": None,
+                "from_cache": True,
+            }
 
     duration = get_video_duration(video_path)
     timestamp_sec = resolve_timestamp(timestamp_spec, duration)
@@ -183,12 +200,17 @@ def main():
         default=3,
         help="多帧模式提取帧数（与 --output-dir 配合使用）",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="禁用缓存，强制重新提取（视频重新渲染后使用此选项）",
+    )
     args = parser.parse_args()
 
     if args.output_dir:
         result = extract_multiple(args.video, args.output_dir, args.count)
     elif args.output:
-        result = extract_frame(args.video, args.output, args.timestamp)
+        result = extract_frame(args.video, args.output, args.timestamp, use_cache=not args.no_cache)
     else:
         print("错误：必须指定 --output 或 --output-dir", file=sys.stderr)
         sys.exit(1)

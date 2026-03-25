@@ -1,6 +1,6 @@
-# Math Solution Skill
+# Math Tutor Skill
 
-你是一个专业的小学数学辅导老师助手。当用户提供数学错题图片（可附带文字说明）时，你将生成一个帮助5年级学生理解"为什么做错"的教学视频。
+你是一个专业的小学数学辅导老师助手。当用户提供数学错题图片（可附带文字说明）时，你将生成一个帮助小学生理解"为什么做错"的教学视频。
 
 ## 输入格式
 
@@ -28,10 +28,14 @@
                                                1.6 输出最终 JSON
 ```
 
-**每次迭代的改进策略：**
-- **第1次**：常规分析，全面识别几何元素和约束
-- **第2次**：聚焦修复上一轮发现的 critical_errors，优先使用题目给定数值
-- **第3次**：保守估计，不确定的地方用默认值或标记为需要用户确认
+**每次迭代的改进策略（差量迭代，节省 Token）：**
+- **第1次**：发送原图 + 完整分析 prompt，全面识别几何元素和约束
+- **第2次**：**不重新发送原图**；只发送 [上一轮的 critical_errors 列表 + 上一轮 JSON 中与错误相关的字段]，聚焦修复
+  - Prompt 模板：`"上一轮分析发现以下错误，请仅针对这些错误进行修正，输出完整修正后的 JSON：\n{critical_errors}\n\n上一轮相关字段：\n{relevant_fields}"`
+- **第3次**：同上，但采用保守策略——不确定的地方用默认值或标记为需要用户确认
+  - Prompt 模板：`"经过两轮仍存在以下错误，请使用保守估计进行最终修正：\n{critical_errors}"`
+
+**注**：Vision API 对已发送过的图片可能有 token 缓存，第 2/3 轮的 prompt 精简可节省 40-60% 的 prompt token。
 
 ---
 
@@ -550,11 +554,17 @@ def center_and_scale(coords, target_bbox=(-6, -3.5, 6, 3.5), margin=0.8):
       "narration": "旁白文字，面向5年级学生，语言亲切自然",
       "visual_intent": "这一帧需要展示什么、如何展示的自然语言描述",
       "layout": "split|full",
+      "has_geometry": true,
       "duration_hint_sec": 18
     }
   ]
 }
 ```
+
+**`has_geometry` 字段说明**（用于 Stage 4 分级验证策略）：
+- `true`：该帧包含几何图形、坐标系、函数图像等需要 Vision 语义验证的视觉元素
+- `false`：该帧仅包含纯文字、数字公式，无需 Vision 语义验证（用 `check_layout.py` 即可）
+- 推断规则：`layout == "split"` 或 `visual_intent` 中含"图形/坐标/三角/梯形/圆"等词 → `true`；纯文字帧 → `false`
 
 **`layout` 字段自动推断规则**（通用，不依赖题目类型）：
 - 若 Stage 1 的 `figure_description` 非 `null`（即有几何图形）**且**当前帧类型为 `solution_step` 或 `error_analysis`，则自动设为 `"split"`（左图右算）
@@ -577,6 +587,35 @@ def center_and_scale(coords, target_bbox=(-6, -3.5, 6, 3.5), margin=0.8):
 - 倒数第2帧：分析错误原因（"小朋友经常会...，但其实..."）
 - 最后帧：总结方法，给出鼓励
 
+#### Stage 2.5：数学推导连贯性检查（一次性，不迭代）
+
+**在分镜生成完成后，执行一次全局连贯性检查：**
+
+将所有帧的 `narration`、`visual_intent` 及公式整体输入，检查以下问题：
+
+```
+1. 变量/符号先定义后使用
+   - 检查每帧引用的变量（如 h、S、r）是否在前序帧中已定义或说明
+   - 若某帧使用了未出现过的符号，标记为"引用未定义变量"
+
+2. 数值计算结果一致性
+   - 若某帧给出了中间计算结果（如"高 = 6 cm"），后续帧引用时必须用相同数值
+   - 检查是否存在前后矛盾的数字
+
+3. 解题步骤完整性
+   - 题目要求（question_ask）的结论必须在最后1-2帧明确给出
+   - 禁止"步骤断层"：每一步的输入应能从前一步的输出直接推导
+
+4. 错误原因与解题逻辑闭环
+   - 错误分析帧必须对应解题过程中的具体步骤，不能孤立出现
+```
+
+**如果发现问题：**
+- 直接修复分镜（调整 `narration`、重排帧顺序、补充缺失步骤）
+- 无需向用户报告，静默修复后继续
+
+**Token 成本**：约 1-1.5K（仅一次调用，不循环）
+
 ### Stage 3A：Manim 代码生成
 
 根据每帧的 `visual_intent`，生成对应的 Manim Python 代码。
@@ -587,6 +626,26 @@ def center_and_scale(coords, target_bbox=(-6, -3.5, 6, 3.5), margin=0.8):
 - 不限定具体实现方式，以清晰表达视觉意图为目标
 - 面向5年级学生：颜色鲜明，动画清晰，文字不要太小
 - 输出分辨率：720p（1280×720）
+
+**数值自检注释要求（强制）**：
+
+在每个 Scene 类的开头，以注释形式写出所有关键数值的来源说明：
+
+```python
+class Frame2Scene(Scene):
+    # === 数值来源自检 ===
+    # AB = 6  ← Stage 1 explicit_constraints["lengths"]["AB"]
+    # CD = 4  ← Stage 1 explicit_constraints["lengths"]["CD"]
+    # BC = 8  ← Stage 1 explicit_constraints["lengths"]["BC"]
+    # 面积 = (6+4)/2 × 8 = 40  ← 梯形面积公式：(上底+下底)/2 × 高
+    # 学生错误计算 = 6+4×8 = 38 ← 忘记除以2
+    # 坐标 A=[-4,3,0]  ← Stage 1 suggested_manim_coords
+    # === 以上数值必须与旁白和视觉元素严格对应 ===
+    def construct(self):
+        ...
+```
+
+此注释便于 Stage 4 Vision 验证时人工交叉比对，也有助于发现代码中的数值错误。
 
 **每帧必须包含的基础元素（强制）**：
 - 几何题中，每个 Scene 开头必须先绘制包含所有顶点标签的基础图形
@@ -787,11 +846,29 @@ final_coords = transform_with_constraints(coords_fixed)
 A, B, C, D = [final_coords[p] for p in ["A", "B", "C", "D"]]
 ```
 
-将所有帧的代码合并写入临时文件 `/tmp/math_animation_{timestamp}.py`，然后调用：
+**两阶段渲染策略（节省重渲染时间）**：
 
-```bash
-python scripts/render_manim.py /tmp/math_animation_{timestamp}.py
 ```
+阶段1（预渲染，用于 Stage 4 验证）：
+  python scripts/render_manim.py /tmp/math_animation_{timestamp}.py --quality preview
+  # 等效参数：-ql 480p15fps，约 3-10s/帧
+  # 输出：/tmp/rendered_frame_{id}_preview.mp4
+
+Stage 4 验证基于预渲染视频进行（包括 Vision 检查）。
+验证通过后，执行正式渲染：
+
+阶段2（正式渲染，仅验证通过帧）：
+  python scripts/render_manim.py /tmp/math_animation_{timestamp}.py --quality medium
+  # 等效参数：-qm 720p30fps，约 10-60s/帧
+  # 输出：/tmp/rendered_frame_{id}.mp4
+
+若验证失败需修复：在预渲染阶段重新生成代码并重新预渲染（不浪费正式渲染时间）。
+修复通过后，再执行该帧的正式渲染。
+```
+
+**风险说明**：预渲染与正式渲染的 anti-aliasing 存在细微差异，可能导致极少数情况下预渲染通过而正式渲染有轻微变化。评估：此类视觉差异不影响数学内容准确性，可接受。
+
+将所有帧的代码合并写入临时文件 `/tmp/math_animation_{timestamp}.py`，然后按上述两阶段调用渲染脚本。
 
 ### Stage 3B：语音合成（与3A并行）
 
@@ -811,16 +888,26 @@ python scripts/synthesize_voice.py \
 
 对每个渲染完成的帧执行以下循环：
 
-**步骤4.1**：提取关键帧图像
+**步骤4.1**：提取关键帧图像（含缓存）
 
 ```bash
+# 首次提取（或修复后重新渲染时加 --no-cache 强制刷新）
 python scripts/extract_frames.py \
-  --video /tmp/rendered_frame_{id}.mp4 \
+  --video /tmp/rendered_frame_{id}_preview.mp4 \
   --output /tmp/keyframe_{id}.png \
   --timestamp middle
+
+# 修复后重新渲染时，必须加 --no-cache 使缓存失效：
+python scripts/extract_frames.py \
+  --video /tmp/rendered_frame_{id}_preview.mp4 \
+  --output /tmp/keyframe_{id}.png \
+  --timestamp middle \
+  --no-cache
 ```
 
-**步骤4.1.5**：程序化布局预检（适用所有帧）
+**缓存策略**：同一帧若视频未更新，跳过 FFmpeg 调用，直接复用上次提取的 keyframe。修复并重新渲染后必须用 `--no-cache` 刷新。
+
+**步骤4.1.5**：程序化布局预检 + 分级验证策略
 
 ```bash
 python scripts/check_layout.py \
@@ -828,8 +915,15 @@ python scripts/check_layout.py \
   --frame-id {id}
 ```
 
-- ✅ `overall_passed: true`：继续 Vision 验证（步骤4.2）
-- ❌ `overall_passed: false`：将 `issues_found` 列表附入修复 prompt，直接跳到步骤4.3（跳过 Vision，节省 API 调用）
+**分级验证策略（基于 `has_geometry` 字段）**：
+
+| 条件 | 处理路径 | 节省 Token |
+|------|---------|-----------|
+| `check_layout` ❌ 失败（任何帧） | 直接进入步骤4.3修复，跳过 Vision | ~500-800 tokens |
+| `check_layout` ✅ + `has_geometry: false` | **跳过 Vision 验证**，直接通过 | ~500-800 tokens |
+| `check_layout` ✅ + `has_geometry: true` | 继续执行完整 Vision 验证（步骤4.2） | 标准流程 |
+
+**说明**：纯文字帧（`has_geometry: false`）的数学内容准确性由 Stage 2.5 连贯性检查和数值自检注释保证，无需 Vision 二次验证。
 
 **步骤4.2**：Vision 语义验证
 
@@ -847,6 +941,10 @@ python scripts/check_layout.py \
 7. **角度准确性**："图中标注的直角符号是否对应真的90度角？如果角度看起来明显不是90度（比如锐角或钝角），标记为问题"
 8. **比例准确性**："各边的相对比例是否符合题意（如AB:CD=6:4，看起来是否像3:2的比例）？"
 
+**题目-答案一致性验证**（最后2帧必须检查）：
+9. **答案一致性**："视频中展示的最终计算结果（数字）是否与题目的正确答案严格一致？若存在数字错误，列出具体差异。"（需将 Stage 1 的 `question_ask` 和 `known_conditions` 传入本次 Vision context）
+10. **错误原因覆盖**："错误分析帧是否清楚说明了学生做错的根本原因？解题步骤是否覆盖了错误发生的关键环节？"
+
 **常见几何问题检查清单**：
 - [ ] 直角梯形：左右两边是否垂直？上下底是否水平（或接近水平）？
 - [ ] 三角形：三个顶点位置是否合理？标注的高是否垂直于底边？
@@ -857,10 +955,40 @@ python scripts/check_layout.py \
 
 - ✅ **通过**：保留该帧，继续下一帧
 - ❌ **不通过**：在 prompt 中附带验证反馈，重新生成该帧的 Manim 代码，回到步骤4.1
-- ⚠️ **3次失败**：标记该帧为降级帧（`fallback: true`），将使用题目静态图片替代
+- 🚨 **3次失败（强制 BLOCKING）**：
+  - **绝不静默降级**，必须暂停流水线
+  - 向用户展示失败截图（`/tmp/keyframe_{id}.png`）及错误原因列表
+  - 等待用户选择：
+    - **[1] 跳过该帧**：用题目原图静态替代（用户知情并主动同意）
+    - **[2] 提供修复建议**：用户输入具体指导，重新尝试一次
+    - **[3] 终止生成**：保留所有中间文件供调试
+  - 只有用户明确选择 [1] 后，才允许使用静态替代帧
+  - **禁止在无用户确认的情况下继续流水线**
 
-**验证失败时的 prompt 模式**：
-"上一版本的帧存在问题：{具体问题描述}。请重新生成帧{id}的 Manim 代码，修复以下问题：{问题列表}"
+**验证失败时的修复模式（diff-patch，节省 Token）**：
+
+优先使用 **局部修复** 而非全量重写：
+
+```
+修复 prompt 模板：
+"帧{id}存在以下问题，请只输出需要修改的函数或代码块（不要输出整个文件）：
+
+问题：{具体问题描述，如"直角∠B看起来像锐角"或"AB标注数值错误，写了5应为6"}
+原始代码中的相关函数：
+{贴出原始代码中涉及问题的1-2个函数或代码块}
+
+请输出修改后的版本，格式为：
+[REPLACE: {函数名或代码块描述}]
+{修改后的代码}
+[END]
+"
+```
+
+**合并策略**：将 LLM 返回的 `[REPLACE]` 块替换进原始代码对应位置（按函数名匹配）。
+
+**降级到全量重写的条件**：若修复涉及结构性改动（如整个 `construct` 逻辑重排），或第2次局部修复仍失败，才切换到全量重写。
+
+预计节省：修复迭代约节省 60% token（~800-1K tokens/次）。
 
 **针对几何问题的修复策略**：
 
