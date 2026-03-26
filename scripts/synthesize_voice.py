@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
 CosyVoice 2 语音合成封装脚本
-用法: python synthesize_voice.py --text "文本" --frame-id 1 --output /tmp/audio_1.mp3
+用法（单帧）: python synthesize_voice.py --text "文本" --frame-id 1 --output /tmp/audio_1.mp3
+用法（批量）: python synthesize_voice.py --batch-file /tmp/tts_batch.json --workers 4
+
+批量 JSON 格式:
+[{"frame_id": 1, "text": "...", "output": "/tmp/audio_1.mp3"}, ...]
 
 依赖 CosyVoice 2 本地服务（默认端口 50000）或 HTTP API。
 如果 CosyVoice 不可用，会自动降级到系统 TTS（macOS say 命令）。
@@ -14,6 +18,7 @@ import sys
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -45,7 +50,6 @@ def get_audio_duration_ms(audio_path: str) -> int:
         pass
 
     # 降级：估算（每字约200ms，中文语速偏慢）
-    # 这个估算只在 ffprobe 失败时使用
     return -1
 
 
@@ -56,7 +60,6 @@ def synthesize_cosyvoice(text: str, output_path: str, style: str = "") -> dict:
     """
     try:
         import urllib.request
-        import urllib.parse
 
         url = f"http://{COSYVOICE_HOST}:{COSYVOICE_PORT}/inference_sft"
         data = {
@@ -139,7 +142,6 @@ def synthesize_macos_say(text: str, output_path: str) -> dict:
     """
     try:
         aiff_path = output_path.replace(".mp3", ".aiff")
-        # 尝试 Enhanced（macOS 14+），降级到 Ting-Ting
         result = None
         for voice in ["Tingting (Enhanced)", "Ting-Ting"]:
             result = subprocess.run(
@@ -226,18 +228,72 @@ def synthesize(text: str, frame_id: int, output_path: str, style: str = "") -> d
     }
 
 
+def synthesize_batch(batch: list[dict], workers: int = 4, style: str = "") -> list[dict]:
+    """
+    并行合成多帧语音。
+    batch: [{"frame_id": int, "text": str, "output": str}, ...]
+    返回: 与输入顺序一致的结果列表，每项追加 method/duration_ms/success 字段。
+    """
+    results = [None] * len(batch)
+
+    def _one(idx, item):
+        result = synthesize(item["text"], item["frame_id"], item["output"], style)
+        return idx, {**item, **result}
+
+    effective_workers = min(workers, len(batch))
+    print(f"[TTS] 批量合成 {len(batch)} 帧，workers={effective_workers}", flush=True)
+
+    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+        futures = {executor.submit(_one, i, item): i for i, item in enumerate(batch)}
+        for future in as_completed(futures):
+            idx, result = future.result()
+            results[idx] = result
+
+    success_count = sum(1 for r in results if r and r.get("success"))
+    print(f"[TTS] 批量完成: {success_count}/{len(batch)} 帧成功", flush=True)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description="CosyVoice 2 语音合成封装")
-    parser.add_argument("--text", required=True, help="要合成的文本")
-    parser.add_argument("--frame-id", type=int, required=True, help="帧 ID")
-    parser.add_argument("--output", required=True, help="输出 MP3 文件路径")
+
+    # 单帧模式
+    parser.add_argument("--text", help="要合成的文本（单帧模式）")
+    parser.add_argument("--frame-id", type=int, help="帧 ID（单帧模式）")
+    parser.add_argument("--output", help="输出 MP3 文件路径（单帧模式）")
+
+    # 批量模式
+    parser.add_argument(
+        "--batch-file",
+        help='批量模式 JSON 文件路径，格式: [{"frame_id": 1, "text": "...", "output": "..."}]',
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="批量并行 worker 数（默认 4）",
+    )
+
     parser.add_argument("--style", default="温和清晰，语速偏慢，适合小学生", help="语音风格描述")
     args = parser.parse_args()
 
-    result = synthesize(args.text, args.frame_id, args.output, args.style)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.batch_file:
+        # 批量模式
+        with open(args.batch_file, "r", encoding="utf-8") as f:
+            batch = json.load(f)
+        results = synthesize_batch(batch, workers=args.workers, style=args.style)
+        print(json.dumps(results, ensure_ascii=False, indent=2))
+        failed = sum(1 for r in results if r and not r.get("success"))
+        sys.exit(1 if failed > 0 else 0)
 
-    sys.exit(0 if result["success"] else 1)
+    elif args.text and args.frame_id is not None and args.output:
+        # 单帧模式
+        result = synthesize(args.text, args.frame_id, args.output, args.style)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        sys.exit(0 if result["success"] else 1)
+
+    else:
+        parser.error("请指定 --batch-file，或同时指定 --text / --frame-id / --output")
 
 
 if __name__ == "__main__":

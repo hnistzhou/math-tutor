@@ -4,33 +4,52 @@ Pipeline 脚本参考。每个脚本支持 `--help` 查看完整参数。
 
 ## render_manim.py
 
-渲染 Manim 动画。
+渲染 Manim 动画，支持并行渲染和渲染前预检。
 
 ```bash
-# 预览模式 (480p15fps, ~3-10s/frame) - 用于 Stage 4 验证
-python scripts/render_manim.py /tmp/animation.py --quality preview
+# 预览模式 + 4 路并行（用于 Stage 4 验证，典型耗时 ~1-2min）
+python scripts/render_manim.py /tmp/animation.py --quality preview --workers 4
 
-# 正式模式 (720p30fps, ~10-60s/frame) - 验证通过后使用
-python scripts/render_manim.py /tmp/animation.py --quality medium
+# 正式模式（验证通过后）
+python scripts/render_manim.py /tmp/animation.py --quality medium --workers 4
+
+# 只渲染指定帧（修复单帧时使用）
+python scripts/render_manim.py /tmp/animation.py --scene Frame3Scene --quality preview
 ```
 
-**参数**: `--quality preview|medium`, `--output-dir`
+**参数**:
+- `--quality preview|medium|high`：渲染质量，preview=480p（默认 medium=720p）
+- `--workers N`：并行 worker 数，默认 4（9 帧约节省 75% 时间）
+- `--skip-validate`：跳过渲染前代码预检
+- `--scene NAME`：只渲染指定场景
 
 ---
 
 ## synthesize_voice.py
 
-语音合成（CosyVoice 2 或系统 TTS 降级）。
+语音合成（CosyVoice 2 或系统 TTS 降级），支持批量并行合成。
 
 ```bash
+# 单帧
 python scripts/synthesize_voice.py \
   --text "旁白文字" \
   --frame-id 1 \
-  --output /tmp/audio_frame_1.mp3 \
-  --style "温和清晰，语速偏慢"
+  --output /tmp/audio_frame_1.mp3
+
+# 批量并行（推荐，9 帧同时合成）
+# 先生成 batch JSON，再批量调用
+python scripts/synthesize_voice.py --batch-file /tmp/tts_batch.json --workers 4
 ```
 
-**参数**: `--text`, `--frame-id`, `--output`, `--style`
+批量 JSON 格式：
+```json
+[
+  {"frame_id": 1, "text": "旁白1", "output": "/tmp/audio_1.mp3"},
+  {"frame_id": 2, "text": "旁白2", "output": "/tmp/audio_2.mp3"}
+]
+```
+
+**参数**: `--text/--frame-id/--output`（单帧）或 `--batch-file`（批量）、`--workers N`
 
 ---
 

@@ -62,5 +62,13 @@ def transform(pt):
     return np.array([pt[0]*scale + dx, pt[1]*scale + dy, 0])
 ```
 ## Two-Stage Rendering
-1. **Preview** (480p15fps): 3-10s/frame for validation
-2. **Medium** (720p30fps): 10-60s/frame for final (after validation)
+1. **Preview** (480p15fps, `--quality preview --workers 4`): 3-10s/frame → ~1-2min total for validation
+2. **Medium** (720p30fps, `--quality medium --workers 4`): 10-60s/frame → after validation passes
+
+## Pre-Validation (Automatic)
+`render_manim.py` runs pre-checks before any rendering:
+- Python syntax check
+- LaTeX dependency (MathTex/Tex requires local LaTeX → replace with Text() if not installed)
+- Common color arg errors: `.set_color(color=X)` → `.set_color(X)`
+
+Fix errors before rendering to avoid wasted render cycles.
