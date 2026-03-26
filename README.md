@@ -1,4 +1,4 @@
-# Math Solution Skill
+# Math Tutor Skill
 
 > 为5年级学生家长构建的 Claude Code Skill：将数学错题图片转化为2-3分钟教学视频，帮助孩子理解"为什么做错"。
 
@@ -80,7 +80,7 @@ export COSYVOICE_SPEAKER=中文女声
 
 1. 将本 Skill 添加到 Claude Code：
    ```
-   /add-skill /path/to/math-solution-skill/skill.md
+   /add-skill /path/to/math-tutor/SKILL.md
    ```
 
 2. 发送数学错题图片并说明情况：
@@ -93,36 +93,7 @@ export COSYVOICE_SPEAKER=中文女声
 
 ### 脚本单独使用
 
-**Manim 渲染**:
-```bash
-python scripts/render_manim.py my_animation.py --output-dir /tmp/frames
-```
-
-**语音合成**:
-```bash
-python scripts/synthesize_voice.py \
-  --text "我们来看这道三角形面积题..." \
-  --frame-id 1 \
-  --output /tmp/audio_1.mp3
-```
-
-**关键帧提取**:
-```bash
-python scripts/extract_frames.py \
-  --video /tmp/frame_1.mp4 \
-  --output /tmp/keyframe_1.png \
-  --timestamp middle
-```
-
-**视频合成**:
-```bash
-python scripts/compose_video.py \
-  --storyboard /tmp/storyboard.json \
-  --frames-dir /tmp/manim_output \
-  --audio-dir /tmp/audio \
-  --source-image problem.jpg \
-  --output ./output.mp4
-```
+详见 [scripts/README.md](scripts/README.md)
 
 ## Pipeline 说明
 
@@ -149,23 +120,17 @@ Stage 5: FFmpeg 合成 output.mp4
 | Manim 渲染失败（3次） | 使用原始题目图片作为静态帧 |
 | 所有帧均降级 | 输出"题目静态图 + 语音讲解"视频 |
 
-## 验证测试
+## 验证安装
 
 ```bash
-# 1. 语音合成测试
-python scripts/synthesize_voice.py \
-  --text "3加5等于8，我们来验证一下" \
-  --frame-id 0 \
-  --output /tmp/test_audio.mp3
+# 语音合成测试
+python scripts/synthesize_voice.py --text "3加5等于8" --frame-id 0 --output /tmp/test.mp3
 
-# 2. Manim 渲染测试（需要先准备测试脚本）
-# 见 tests/ 目录（待添加）
-
-# 3. 帧提取测试
-python scripts/extract_frames.py \
-  --video /path/to/any/video.mp4 \
-  --output /tmp/test_frame.png
+# 帧提取测试
+python scripts/extract_frames.py --video /any/video.mp4 --output /tmp/test.png
 ```
+
+详细脚本用法见 [scripts/README.md](scripts/README.md)。
 
 ## 已知限制
 
